@@ -10,6 +10,9 @@
 * 		Then, this program applies traffic rules into home gateway according to flow's contents characteristics.
 * 
 * Ex) There are traffics such as video streaming, VoIP, file download in home network. then home gateway differentially manage trafifcs according to content characteristics.  
+*
+* How to build
+* 		gcc -o TrafficManagement TrafficManagement.c -lpcap
 */
 #include <stdio.h>
 #include <pcap.h>
@@ -31,6 +34,7 @@
 // Global variables
 unsigned long int total=0;
 ipAddr[256][16];
+struct sockaddr_in source, dest;
 
 // Flow
 typedef struct FlowNode
@@ -44,34 +48,38 @@ typedef struct FlowNode
 	struct FlowNode *next;
 } FlowNode;
 
+// Declare functions
+void process_packet(u_char *args, const struct pcap_pkthdr *header, const u_char *buffer);
+void analyze_flow(struct FlowNode *flow, char* addr, int packetSize, const u_char *buffer, bool isUplink);
+
+
 // Head flow and current flow
-FlowNode* head = NULL;
-FlowNode* curr = NULL;
+struct FlowNode* head = NULL;
+struct FlowNode* curr = NULL;
 
 // Create, Insert, Remove, Search function for flow management
-FlowNode *create_flow(char *addr)
+struct FlowNode *create_flow(char *addr)
 {
 	// Allocate memory for flow node
-	FlowNode *new_flow;
-	new_flow = (FlowNode *)malloc(sizeof(FlowNode));
+	struct FlowNode *new_flow;
+	new_flow = (struct FlowNode *)malloc(sizeof(struct FlowNode));
 	if ( new_flow == NULL) {
 		error("Memory allocation error");
 	}
 
 	// Attach new node to end of flow list
-	FlowNode *p = head;
-	if (p == NULL){ // There is no any flow in Flow list, attach flow node as first node
+	struct FlowNode *tmp = head;
+	if (tmp == NULL){ // There is no any flow in Flow list, attach flow node as first node
 		head = new_flow;
 		new_flow->next = NULL;		
 	}
 
-	while ( p != NULL ){
-
-		if ( p->next == NULL ){
-			p->next = new_flow;
+	while ( tmp != NULL ){
+		if ( tmp->next == NULL ){
+			tmp->next = new_flow;
 			new_flow->next = NULL;
 		}
-		p = p->next;
+		tmp = tmp->next;
 	}
 	
 	// Initialization for flow node
@@ -79,14 +87,21 @@ FlowNode *create_flow(char *addr)
 	new_flow->uplink = 0;
 	new_flow->downlink = 0;
 	new_flow->app = 0;
+	curr = new_flow;
 }
 
-FlowNode *search_flow (FlowNode *head, char *addr)
+struct FlowNode *search_flow (struct FlowNode **head, char *addr)
 {
-	FlowNode *p;
-	p = head;
+	struct FlowNode *p;
+	p = *head;
+	if(p == NULL){
+		return NULL;
+	}
+	printf("<Debug> 102\n");
 	while( p != NULL ){
-		if ( !strcmp( inet_ntoa(p->addr), addr ) ){
+		printf("<Debug> 104\n");
+		if ( !strcmp( inet_ntoa( *(struct in_addr *)p->addr ), addr ) ){
+			printf("<Debug> Flow IP: %s\n", p->addr);
 			return p;
 		}
 		p = p->next;
@@ -102,6 +117,7 @@ int main(int argc, char const *argv[])
 	// Network interface pointers and handler for packet capture
 	pcap_if_t *allDev, *dev;
 	pcap_t *pcapHandler;
+	FILE* logfile;
 
 	char errbuf[100] , *devname , devs[100][100];
 	int count = 1 , n;
@@ -165,23 +181,28 @@ int main(int argc, char const *argv[])
 }
 
 // Flow update
-void analyze_flow(FlowNode *flow, char* addr, int packetSize, const u_char *buffer, bool isUplink)
+void analyze_flow(struct FlowNode *flow, char* addr, int packetSize, const u_char *buffer, bool isUplink)
 {
+
 	if ( isUplink == true ){ // Uplink
 		// Todo: Update basic flow inforamtion EX) Throughput, etc.
+		flow->uplink += packetSize;
 		printf("[Uplink]   Currnet Flow Info.\n");
-		printf("IP: %s\n", curr->addr);
-		printf("Uplink: %d\n", curr->uplink);
-		printf("Downlink: %d\n", curr->downlink);
+		printf("IP: %s\n", flow->addr); // Error Code 
+		printf("Uplink: %d\n", flow->uplink);
+		printf("Downlink: %d\n", flow->downlink);
+		printf("Application: %d\n", flow->app);
 		printf("------------------------------------------------\n");
 		// Todo: Analyze flows to identify app used by flow
 	}
 	else{ // Downlink
 		// Todo: Update basic flow's information
+		flow->downlink += packetSize;
 		printf("[Downlink] Currnet Flow Info.\n");
-		printf("IP: %s\n", curr->addr);
-		printf("Uplink: %d\n", curr->uplink);
-		printf("Downlink: %d\n", curr->downlink);
+		printf("IP: %s\n", flow->addr);
+		printf("Uplink: %d\n", flow->uplink);
+		printf("Downlink: %d\n", flow->downlink);
+		printf("Application: %d\n", flow->app);
 		printf("------------------------------------------------\n");
 		// Todo: Analyze flows to identify app used by flow
 	}
@@ -208,25 +229,26 @@ void process_packet(u_char *args, const struct pcap_pkthdr *header, const u_char
 	// Check flow list
 	for ( int i = 0; i < 256; ++i ){
 		if ( !strcmp( inet_ntoa(source.sin_addr), ipAddr[i]) ){ // Uplink 
-			if( (curr = search_flow(head, ipAddr[i])) != NULL ){ 
+			if( (curr = search_flow(&head, ipAddr[i])) != NULL ){ 
 				// Update flow information
-				analyze_flow(ipAddr[i], size, buffer, true);
+				analyze_flow(curr, ipAddr[i], size, buffer, true);
 			}
 			else{
 				// Create flow node and Update flow information
 				create_flow(ipAddr[i]);
-				analyze_flow(ipAddr[i], size, buffer, false);
+				analyze_flow(curr, ipAddr[i], size, buffer, true);
 			}
 		}
 		else if ( !strcmp( inet_ntoa(dest.sin_addr), ipAddr[i]) ){ // Downlink
-			if( (curr = search_flow(head, ipAddr[i])) != NULL ){ 
+			if( (curr = search_flow(&head, ipAddr[i])) != NULL ){ 
 				// Update flow information
-				analyze_flow(ipAddr[i], size, buffer, true);
+				analyze_flow(curr, ipAddr[i], size, buffer, false);
+
 			}
 			else{
 				// Create flow node and Update flow information
 				create_flow(ipAddr[i]);
-				analyze_flow(ipAddr[i], size, buffer, false);
+				analyze_flow(curr, ipAddr[i], size, buffer, false);
 			}
 		}
 	}
@@ -234,4 +256,3 @@ void process_packet(u_char *args, const struct pcap_pkthdr *header, const u_char
 	// After flow analysis, we can get flow's application. so, we can do traffic shaping according to flow's applicaiton
 	/* Code */
 }
-
